@@ -1,0 +1,19 @@
+# Gophish Configuration File
+# Copy this file to gophish.config and fill in your API keys
+
+[Gophish]
+# Full host URL including protocol and port
+# Example: https://127.0.0.1:3333 or http://192.168.1.100:3333
+gp_host: https://127.0.0.1:3333
+# Your Gophish API key from Settings tab
+api_key: YOUR_GOPHISH_API_KEY_HERE
+
+[ipinfo.io]
+# Optional: IPInfo.io API token for geolocation (free tier: 1000 requests/day)
+# Get your token at: https://ipinfo.io/signup
+ipinfo_token: YOUR_IPINFO_TOKEN_HERE
+
+[Google]
+# Optional: Google Maps Geolocate API key
+# Enable the Geolocation API in Google Cloud Console
+geolocate_key: YOUR_GOOGLE_API_KEY_HERE

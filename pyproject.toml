@@ -1,0 +1,19 @@
+[project]
+name = "goreport"
+version = "3.1.0"
+description = "A Gophish Reporting Tool for analyzing phishing campaign results"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8.2.1",
+    "configparser>=7.2.0",
+    "gophish>=0.5.1",
+    "python-dateutil>=2.8.1",
+    "python-docx>=1.2.0",
+    "requests>=2.24.0",
+    "user-agents>=2.2.0",
+    "xlsxwriter>=3.2.5",
+]
+
+[project.scripts]
+goreport = "GoReport:parse_options"

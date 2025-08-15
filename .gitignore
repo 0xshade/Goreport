@@ -1,3 +1,10 @@
 *.DS_Store
 *.pyc
 *.config
+uv.lock
+.claude
+.kiro/
+.venv/
+output/*
+.python-version
+docs/

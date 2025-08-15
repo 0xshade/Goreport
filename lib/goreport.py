@@ -11,16 +11,18 @@ try:
     from gophish import Gophish
 except:
     print("[!] Could not import the Gophish library! Make sure it is installed.\n\
-Run: `python3 -m pip intall gophish`\n\
+Run: `python3 -m pip install gophish`\n\
 Test it by running `python3` and then, in the \
 Python prompt, typing `from gophish import Gophish`.")
     exit()
 
 # Standard Libraries
 import configparser
+import json
 import os.path
 import sys
 from collections import Counter
+from datetime import datetime, timezone, timedelta
 
 # 3rd Party Libraries
 import requests
@@ -99,7 +101,15 @@ class Goreport(object):
     xlsx_header_bg_color = "#0085CA"
     xlsx_header_font_color = "#FFFFFF"
 
-    def __init__(self, report_format, config_file, google, verbose):
+    # Timeline-specific options
+    timeline_mode = False
+    separate_campaigns = False
+
+    # Timeline-specific data structures
+    timeline_data = []  # List of timeline event dictionaries
+    campaign_timeline_data = {}  # Dict mapping campaign_id to timeline events
+
+    def __init__(self, report_format, config_file, google, verbose, timeline_mode=False, separate_campaigns=False, output_dir="output", rid_field=None):
         """
         Initiate the connection to the Gophish server with the provided host, port,
         and API key and prepare to use the external APIs.
@@ -150,6 +160,30 @@ class Goreport(object):
         self.google = google
         self.verbose = verbose
         self.report_format = report_format
+        self.timeline_mode = timeline_mode
+        self.separate_campaigns = separate_campaigns
+        self.rid_field = rid_field
+        # Handle output parameter - could be directory or full file path
+        self.output_path = output_dir
+        self.custom_filename = None
+
+        # Check if output_dir contains a file extension (indicating it's a full path)
+        if output_dir != "output" and ('.' in os.path.basename(output_dir)):
+            # It's a full file path
+            self.output_dir = os.path.dirname(output_dir) or "."
+            self.custom_filename = os.path.basename(output_dir)
+        else:
+            # It's a directory
+            self.output_dir = output_dir
+
+        # Initialize timeline-specific data structures
+        self.timeline_data = []
+        self.campaign_timeline_data = {}
+
+        # Create output directory if it doesn't exist
+        if not os.path.exists(self.output_dir):
+            os.makedirs(self.output_dir)
+            print(f"[+] Created output directory: {self.output_dir}")
         # Connect to the Gophish API
         # NOTE: This step succeeds even with a bad API key, so the true test is fetching an ID
         print(f"[+] Connecting to Gophish at {GP_HOST}")
@@ -158,9 +192,7 @@ class Goreport(object):
 
     def run(self, id_list, combine_reports, set_complete_status):
         """Run everything to process the target campaign."""
-        # Output some feedback for user options
-        if combine_reports:
-            print("[+] Campaign results will be combined into a single report.")
+        # Output some feedback for user options will be done after we determine the final combine setting
         if set_complete_status:
             print('[+] Campaign statuses will be set to "Complete" after processing the results.')
         try:
@@ -218,9 +250,18 @@ Ensure the IDs are provided as comma-separated integers or interger ranges, e.g.
             print(f"L.. GoReport found {dupes} duplicate campaign IDs, so those have been trimmed.")
         # Provide  list of all IDs that will be processed
         print(f"[+] GoReport will process the following campaign IDs: {','.join(id_list)}")
+        # Automatically combine reports when multiple IDs are provided
+        if len(id_list) > 1 and not combine_reports:
+            combine_reports = True
+            print("[+] Multiple campaigns detected - automatically combining into a single report.")
         # If --combine is used with just one ID it can break reporting, so we catch that here
-        if len(id_list) == 1 and combine_reports:
+        elif len(id_list) == 1 and combine_reports:
             combine_reports = False
+            print("[+] Single campaign - generating individual report.")
+        elif len(id_list) > 1 and combine_reports:
+            print("[+] Campaign results will be combined into a single report.")
+        else:
+            print("[+] Generating individual report for the campaign.")
         # Go through each campaign ID and get the results
         campaign_counter = 1
         for CAM_ID in id_list:
@@ -240,13 +281,19 @@ Ensure the IDs are provided as comma-separated integers or interger ranges, e.g.
                         print(f"L.. Details: {self.campaign.message}")
                         # We can't let an error with an ID stop reporting, so check if this was the last ID
                         if CAM_ID == id_list[-1] and combine_reports:
+                            self.finalize_timeline_data()
                             self.generate_report()
                 # If self.campaign.success does not exist then we were successful
                 except:
                     print("[+] Success!")
                     # Collect campaign details and process data
-                    self.collect_all_campaign_info(combine_reports)
+                    if not self.collect_all_campaign_info(combine_reports):
+                        # Skip this campaign if collection failed
+                        continue
                     self.process_timeline_events(combine_reports)
+                    # Process timeline data for timeline reports
+                    if self.timeline_mode:
+                        self.process_timeline_for_report(combine_reports)
                     self.process_results(combine_reports)
                     # If the --complete flag was set, now set campaign status to Complete
                     if set_complete_status:
@@ -266,9 +313,11 @@ Ensure the IDs are provided as comma-separated integers or interger ranges, e.g.
                     # Check if this is the last campaign ID in the list
                     # If this is the last ID and combined reports is on, generate the report
                     if CAM_ID == id_list[-1] and combine_reports:
+                        self.finalize_timeline_data()
                         self.generate_report()
                     # Otherwise, if we are not combining reports, generate the reports
                     elif combine_reports is False:
+                        self.finalize_timeline_data()
                         self.generate_report()
                     campaign_counter += 1
             except Exception as e:
@@ -429,13 +478,17 @@ Ensure the IDs are provided as comma-separated integers or interger ranges, e.g.
         """Collect the campaign's details and set values for each of the variables."""
         # Collect the basic campaign details
         try:
+            # Check if campaign object exists
+            if not self.campaign:
+                print(f"[!] Campaign object is None - skipping campaign processing.")
+                return False
+
             # Begin by checking if the ID is valid
             self.cam_id = self.campaign.id
+            # Always get basic campaign info to ensure we have fresh details for each campaign
             if combine_reports and self.cam_name is None:
                 print(f"[+] Reports will be combined -- setting name, dates, and URL based on campaign ID {self.cam_id}.")
-                self.get_basic_campaign_info()
-            elif combine_reports is False:
-                self.get_basic_campaign_info()
+            self.get_basic_campaign_info()
             # Collect the results and timeline lists
             if self.results is None:
                 self.results = self.campaign.results
@@ -446,8 +499,10 @@ Ensure the IDs are provided as comma-separated integers or interger ranges, e.g.
             else:
                 self.results = self.campaign.results
                 self.timeline = self.campaign.timeline
-        except:
-            print(f"[!] Looks like campaign ID {self.cam_id} does not exist! Skipping it...")
+            return True
+        except Exception as e:
+            print(f"[!] Error collecting campaign info: {e}")
+            return False
 
     def process_results(self, combine_reports):
         """Process the results model to collect basic data, like total targets and event details.
@@ -569,6 +624,329 @@ Ensure the IDs are provided as comma-separated integers or interger ranges, e.g.
             self.total_reported = reported_counter
             self.total_submitted = submitted_counter
 
+    def extract_timeline_events(self):
+        """Extract timeline events focusing on clicks and data submissions.
+
+        Parse event details JSON to extract IP, user agent, and submitted data.
+        Create structured timeline data with all required fields.
+        Handle multiple clicks per user and missing data gracefully.
+        """
+        timeline_events = []
+
+        # Get email sent events for context (or launch date as fallback)
+        email_sent_events = {}
+
+        for event in self.campaign.timeline:
+            if event.message == "Email Sent":
+                email_sent_events[event.email] = event.time
+
+        # If no email sent events found, use launch date as fallback
+        if not email_sent_events and self.launch_date:
+            # Get all unique emails from click/submit events
+            unique_emails = set()
+            for event in self.campaign.timeline:
+                if event.message in ["Clicked Link", "Submitted Data"] and event.email:
+                    unique_emails.add(event.email)
+
+            # Use launch date for all users
+            for email in unique_emails:
+                email_sent_events[email] = self.launch_date
+
+        # Process click and submission events
+        for event in self.campaign.timeline:
+            if event.message in ["Clicked Link", "Submitted Data"]:
+                try:
+                    # Parse event details JSON
+                    details = {}
+                    if hasattr(event, 'details') and event.details:
+                        try:
+                            # Check if details is already a dict or needs JSON parsing
+                            if isinstance(event.details, dict):
+                                details = event.details
+                            else:
+                                details = json.loads(event.details)
+                        except (json.JSONDecodeError, TypeError):
+                            if self.verbose:
+                                print(f"[*] Warning: Could not parse event details for {event.email}")
+                            details = {}
+
+                    # Extract browser information
+                    browser_info = details.get('browser', {})
+                    ip_address = browser_info.get('address', 'Unknown')
+                    user_agent = browser_info.get('user-agent', 'Unknown')
+
+                    # Extract reference ID from payload
+                    payload = details.get('payload', {})
+                    reference_id = 'Unknown'
+
+                    if self.rid_field:
+                        # Use custom RID field if specified
+                        if self.rid_field in payload and payload[self.rid_field]:
+                            reference_id = payload[self.rid_field][0] if isinstance(payload[self.rid_field], list) else payload[self.rid_field]
+                    else:
+                        # Check for different possible reference ID field names
+                        for rid_field in ['rid', 'id', 'campaign_id', 'reference_id']:
+                            if rid_field in payload and payload[rid_field]:
+                                reference_id = payload[rid_field][0] if isinstance(payload[rid_field], list) else payload[rid_field]
+                                break
+
+                    # Extract submitted data for data submission events
+                    submitted_data = None
+                    if event.message == "Submitted Data" and payload:
+                        # Remove rid from payload to get actual submitted data
+                        submitted_data = {k: v for k, v in payload.items() if k != 'rid'}
+
+                    # Create timeline event record
+                    timeline_event = {
+                        'campaign_id': self.cam_id,
+                        'campaign_name': self.cam_name,
+                        'user_email': event.email,
+                        'reference_id': reference_id,
+                        'email_sent_time': email_sent_events.get(event.email, 'Unknown'),
+                        'event_type': event.message,
+                        'event_time': event.time,
+                        'submitted_data': submitted_data,
+                        'ip_address': ip_address,
+                        'user_agent': user_agent
+                    }
+
+                    timeline_events.append(timeline_event)
+
+                except Exception as e:
+                    if self.verbose:
+                        print(f"[*] Warning: Error processing timeline event for {event.email}: {e}")
+                    continue
+
+        return timeline_events
+
+    def format_datetime_gmt4(self, iso_datetime_str):
+        """Convert ISO datetime string to human-friendly DD/MM/YYYY HH:MM format in GMT+4."""
+        if not iso_datetime_str or iso_datetime_str == 'Unknown':
+            return 'Unknown'
+
+        try:
+            # Handle different datetime string formats
+            datetime_str = str(iso_datetime_str)
+
+            # Replace Z with +00:00 for timezone parsing
+            if datetime_str.endswith('Z'):
+                datetime_str = datetime_str[:-1] + '+00:00'
+
+            # Handle microseconds with more than 6 digits (Python limitation)
+            if '.' in datetime_str and '+' in datetime_str:
+                date_part, tz_part = datetime_str.split('+')
+                if '.' in date_part:
+                    main_part, microsec_part = date_part.split('.')
+                    # Truncate microseconds to 6 digits
+                    microsec_part = microsec_part[:6].ljust(6, '0')
+                    datetime_str = f"{main_part}.{microsec_part}+{tz_part}"
+
+            # Parse the ISO datetime string
+            dt = datetime.fromisoformat(datetime_str)
+
+            # Convert to GMT+4
+            gmt4 = timezone(timedelta(hours=4))
+            dt_gmt4 = dt.astimezone(gmt4)
+
+            # Format as DD/MM/YYYY HH:MM
+            return dt_gmt4.strftime('%d/%m/%Y %H:%M')
+        except (ValueError, AttributeError) as e:
+            if self.verbose:
+                print(f"[*] Warning: Could not format datetime '{iso_datetime_str}': {e}")
+            return str(iso_datetime_str)
+
+    def process_timeline_for_report(self, combine_reports):
+        """Process timeline data for report generation.
+
+        Group events by user email, handle multiple clicks per user,
+        correlate with email sent timestamps, and handle edge cases.
+        """
+        if not self.timeline_mode:
+            return
+
+        try:
+            # Extract timeline events for current campaign
+            timeline_events = self.extract_timeline_events()
+        except Exception as e:
+            if self.verbose:
+                print(f"[*] Warning: Error extracting timeline events: {e}")
+            timeline_events = []
+
+        if combine_reports:
+            # Store events by campaign for later processing
+            # Always populate campaign_timeline_data for timeline mode
+            if self.timeline_mode:
+                # Use the current campaign's name directly from the campaign object
+                current_campaign_name = self.campaign.name if hasattr(self.campaign, 'name') else f"Campaign {self.cam_id}"
+
+                # Always ensure we have the structure for this campaign
+                if self.cam_id not in self.campaign_timeline_data:
+                    self.campaign_timeline_data[self.cam_id] = {
+                        'campaign_name': '',
+                        'events': [],
+                        'subject': '',
+                        'phish_url': '',
+                        'launch_date': ''
+                    }
+
+                # Always update with the current campaign's details
+                # These values are set fresh in get_basic_campaign_info() for each campaign
+                self.campaign_timeline_data[self.cam_id]['campaign_name'] = current_campaign_name
+                self.campaign_timeline_data[self.cam_id]['subject'] = self.cam_subject_line
+                self.campaign_timeline_data[self.cam_id]['phish_url'] = self.cam_url
+                self.campaign_timeline_data[self.cam_id]['launch_date'] = self.launch_date
+
+                # Add the events
+                self.campaign_timeline_data[self.cam_id]['events'].extend(timeline_events)
+
+            # Also add to combined timeline data for non-timeline reports
+            if not self.separate_campaigns:
+                self.timeline_data.extend(timeline_events)
+        else:
+            # Single campaign - keep raw events for timeline mode
+            if self.timeline_mode:
+                # For timeline reports, keep raw events (one per click)
+                self.timeline_data = timeline_events
+            else:
+                # For non-timeline reports, group by user
+                self.timeline_data = timeline_events
+                self._group_timeline_events_by_user(timeline_events)
+
+    def _group_timeline_events_by_user(self, timeline_events):
+        """Group timeline events by user email and aggregate multiple clicks."""
+        user_timeline = {}
+
+        for event in timeline_events:
+            email = event['user_email']
+
+            if email not in user_timeline:
+                user_timeline[email] = {
+                    'campaign_id': event['campaign_id'],
+                    'campaign_name': event['campaign_name'],
+                    'user_email': email,
+                    'reference_id': event['reference_id'],
+                    'email_sent_time': event['email_sent_time'],
+                    'click_timestamps': [],
+                    'data_submitted_time': None,
+                    'submitted_data': None,
+                    'ip_address': event['ip_address'],
+                    'user_agent': event['user_agent']
+                }
+
+            # Add event data based on type
+            if event['event_type'] == "Clicked Link":
+                user_timeline[email]['click_timestamps'].append(event['event_time'])
+                # Update IP and user agent from most recent click if different
+                if event['ip_address'] != 'Unknown':
+                    user_timeline[email]['ip_address'] = event['ip_address']
+                if event['user_agent'] != 'Unknown':
+                    user_timeline[email]['user_agent'] = event['user_agent']
+
+            elif event['event_type'] == "Submitted Data":
+                user_timeline[email]['data_submitted_time'] = event['event_time']
+                user_timeline[email]['submitted_data'] = event['submitted_data']
+                # Update IP and user agent from submission if different
+                if event['ip_address'] != 'Unknown':
+                    user_timeline[email]['ip_address'] = event['ip_address']
+                if event['user_agent'] != 'Unknown':
+                    user_timeline[email]['user_agent'] = event['user_agent']
+
+        # Sort click timestamps for each user
+        for user_data in user_timeline.values():
+            user_data['click_timestamps'].sort()
+
+        # Store grouped data (replace timeline_data with grouped version)
+        if not self.separate_campaigns or not hasattr(self, '_processing_combined'):
+            self.timeline_data = list(user_timeline.values())
+
+        return user_timeline
+
+    def finalize_timeline_data(self):
+        """Finalize timeline data processing for combined campaigns."""
+        if not self.timeline_mode:
+            return
+
+        if self.separate_campaigns and self.campaign_timeline_data:
+            # Keep campaigns separate - data is already organized by campaign
+            pass
+        elif not self.separate_campaigns and self.timeline_data:
+            # For timeline reports, we want to keep individual events (one row per click)
+            # Just sort the events chronologically
+            self.timeline_data = sorted(self.timeline_data, key=lambda x: (x.get('user_email', ''), x.get('event_time', '')))
+            return
+
+            # The code below groups events by user - skip it for timeline reports
+            # Combined mode - sort all events chronologically
+            # Group combined events by user across all campaigns
+            combined_user_timeline = {}
+
+            for event in self.timeline_data:
+                email = event['user_email']
+
+                if email not in combined_user_timeline:
+                    combined_user_timeline[email] = {
+                        'campaigns': set(),
+                        'user_email': email,
+                        'reference_ids': set(),
+                        'email_sent_times': [],
+                        'click_timestamps': [],
+                        'data_submitted_times': [],
+                        'submitted_data_entries': [],
+                        'ip_addresses': set(),
+                        'user_agents': set()
+                    }
+
+                user_data = combined_user_timeline[email]
+
+                # Aggregate data across campaigns
+                if event.get('campaign_id'):
+                    user_data['campaigns'].add(f"{event['campaign_id']}: {event['campaign_name']}")
+                if event.get('reference_id') and event['reference_id'] != 'Unknown':
+                    user_data['reference_ids'].add(event['reference_id'])
+                if event.get('email_sent_time') and event['email_sent_time'] != 'Unknown':
+                    user_data['email_sent_times'].append(event['email_sent_time'])
+
+                # Handle both raw events and grouped events
+                if event.get('click_timestamps'):
+                    # This is a grouped event
+                    user_data['click_timestamps'].extend(event['click_timestamps'])
+                elif event.get('event_type') == 'Clicked Link' and event.get('event_time'):
+                    # This is a raw event
+                    user_data['click_timestamps'].append(event['event_time'])
+
+                if event.get('data_submitted_times'):
+                    # This is a grouped event
+                    user_data['data_submitted_times'].extend(event['data_submitted_times'])
+                elif event.get('event_type') == 'Submitted Data' and event.get('event_time'):
+                    # This is a raw event
+                    user_data['data_submitted_times'].append(event['event_time'])
+
+                if event.get('submitted_data'):
+                    user_data['submitted_data_entries'].append(event['submitted_data'])
+                if event.get('ip_address') and event['ip_address'] != 'Unknown':
+                    user_data['ip_addresses'].add(event['ip_address'])
+                if event.get('user_agent') and event['user_agent'] != 'Unknown':
+                    user_data['user_agents'].add(event['user_agent'])
+
+            # Convert sets to sorted lists and finalize data
+            finalized_data = []
+            for email, user_data in combined_user_timeline.items():
+                finalized_event = {
+                    'user_email': email,
+                    'campaigns': ', '.join(sorted(user_data['campaigns'])),
+                    'reference_ids': ', '.join(sorted(user_data['reference_ids'])) if user_data['reference_ids'] else 'Unknown',
+                    'email_sent_times': sorted(user_data['email_sent_times']),
+                    'click_timestamps': sorted(user_data['click_timestamps']),
+                    'data_submitted_times': sorted(user_data['data_submitted_times']),
+                    'submitted_data_entries': user_data['submitted_data_entries'],
+                    'ip_addresses': ', '.join(sorted(user_data['ip_addresses'])) if user_data['ip_addresses'] else 'Unknown',
+                    'user_agents': ', '.join(sorted(user_data['user_agents'])) if user_data['user_agents'] else 'Unknown'
+                }
+                finalized_data.append(finalized_event)
+
+            # Sort by email for consistent output
+            self.timeline_data = sorted(finalized_data, key=lambda x: x['user_email'])
+
     def generate_report(self):
         """Determines which type of report generate and the calls the appropriate reporting
         functions.
@@ -576,7 +954,10 @@ Ensure the IDs are provided as comma-separated integers or interger ranges, e.g.
         if self.report_format == "excel":
             print("[+] Building the report -- you selected a Excel/xlsx report.")
             self.output_xlsx_report = self._build_output_xlsx_file_name()
-            self.write_xlsx_report()
+            if self.timeline_mode:
+                self.write_xlsx_timeline_report()
+            else:
+                self.write_xlsx_report()
         elif self.report_format == "word":
             print("[+] Building the report -- you selected a Word/docx report.")
             print("[+] Looking for the template.docx to be used for the Word report.")
@@ -584,13 +965,19 @@ Ensure the IDs are provided as comma-separated integers or interger ranges, e.g.
                 print("[+] Template was found -- proceeding with report generation...")
                 print("L.. Word reports can take a while if you had a lot of recipients.")
                 self.output_word_report = self._build_output_word_file_name()
-                self.write_word_report()
+                if self.timeline_mode:
+                    self.write_word_timeline_report()
+                else:
+                    self.write_word_report()
             else:
                 print("[!] Could not find the template document! Make sure 'template.docx' is in the GoReport directory.")
                 sys.exit()
         elif self.report_format == "quick":
             print("[+] Quick report stats:")
-            self.get_quick_stats()
+            if self.timeline_mode:
+                self.get_timeline_quick_stats()
+            else:
+                self.get_quick_stats()
 
     def get_quick_stats(self):
         """Present quick stats for the campaign. Just basic numbers and some details."""
@@ -615,17 +1002,134 @@ Ensure the IDs are provided as comma-separated integers or interger ranges, e.g.
         print(f"Individuals Who Entered Data:\t\t{self.total_unique_submitted}")
         print(f"Individuals Who Reported the Email:\t{self.total_unique_reported}")
 
+    def get_timeline_quick_stats(self):
+        """Present timeline-specific quick stats for the campaign."""
+        print()
+        print("=== TIMELINE REPORT ===")
+
+        if self.separate_campaigns and self.campaign_timeline_data:
+            print(f"Campaigns Processed:\t{len(self.campaign_timeline_data)}")
+            print()
+
+            for campaign_id, campaign_info in self.campaign_timeline_data.items():
+                print(f"Campaign {campaign_id}: {campaign_info['campaign_name']}")
+                self._print_timeline_stats_for_data(campaign_info['events'])
+                print()
+        else:
+            campaign_name = self.cam_name if hasattr(self, 'cam_name') and self.cam_name else "Combined Campaigns"
+            print(f"Timeline for: {campaign_name}")
+            self._print_timeline_stats_for_data(self.timeline_data)
+
+        # Show sample timeline events
+        print("=== SAMPLE TIMELINE EVENTS ===")
+        sample_events = self.timeline_data[:3] if self.timeline_data else []
+        if not sample_events and self.campaign_timeline_data:
+            # Get sample from first campaign
+            first_campaign = next(iter(self.campaign_timeline_data.values()))
+            sample_events = first_campaign['events'][:3]
+
+        for i, event in enumerate(sample_events, 1):
+            print(f"Sample {i}:")
+            if isinstance(event, dict):
+                print(f"  User: {event.get('user_email', 'Unknown')}")
+                print(f"  Clicks: {len(event.get('click_timestamps', []))}")
+                print(f"  Submitted Data: {'Yes' if event.get('submitted_data') or event.get('data_submitted_time') else 'No'}")
+                print(f"  IP: {event.get('ip_address', event.get('ip_addresses', 'Unknown'))}")
+            print()
+
+    def _print_timeline_stats_for_data(self, timeline_data):
+        """Print timeline statistics for a given dataset."""
+        if not timeline_data:
+            print("  No timeline data available")
+            return
+
+        total_users = len(timeline_data)
+        users_with_clicks = 0
+        users_with_submissions = 0
+        total_clicks = 0
+        total_submissions = 0
+        unique_ips = set()
+
+        for event in timeline_data:
+            if isinstance(event, dict):
+                # Count clicks
+                click_timestamps = event.get('click_timestamps', [])
+                if click_timestamps:
+                    users_with_clicks += 1
+                    if isinstance(click_timestamps, list):
+                        total_clicks += len(click_timestamps)
+                    else:
+                        total_clicks += 1
+
+                # Count submissions
+                if (event.get('submitted_data') or
+                    event.get('data_submitted_time') or
+                    event.get('data_submitted_times')):
+                    users_with_submissions += 1
+                    submit_times = event.get('data_submitted_times', [])
+                    if isinstance(submit_times, list):
+                        total_submissions += len(submit_times)
+                    else:
+                        total_submissions += 1
+
+                # Collect IPs
+                ip_addr = event.get('ip_address', event.get('ip_addresses', ''))
+                if ip_addr and ip_addr != 'Unknown':
+                    if ',' in str(ip_addr):
+                        unique_ips.update(str(ip_addr).split(', '))
+                    else:
+                        unique_ips.add(str(ip_addr))
+
+        print(f"  Total Users:\t\t\t{total_users}")
+        print(f"  Users Who Clicked:\t\t{users_with_clicks}")
+        print(f"  Users Who Submitted Data:\t{users_with_submissions}")
+        print(f"  Total Click Events:\t\t{total_clicks}")
+        print(f"  Total Submission Events:\t{total_submissions}")
+        print(f"  Unique IP Addresses:\t\t{len(unique_ips)}")
+
     def _build_output_xlsx_file_name(self):
-        """Create the xlsx report name."""
-        safe_name = "".join([c for c in self.cam_name if c.isalpha() or c.isdigit() or c == " "]).rstrip()
-        xlsx_report = f"Gophish Results for {safe_name}.xlsx"
-        return xlsx_report
+        """Create the xlsx report name with output directory."""
+        # Use custom filename if provided
+        if hasattr(self, 'custom_filename') and self.custom_filename:
+            return os.path.join(self.output_dir, self.custom_filename)
+
+        # Generate default filename
+        if self.timeline_mode and self.separate_campaigns and len(self.campaign_timeline_data) > 1:
+            # For separate campaigns timeline, use generic name since each sheet has its own campaign name
+            safe_name = "Multiple Campaigns"
+        elif hasattr(self, 'cam_name') and self.cam_name:
+            safe_name = "".join([c for c in self.cam_name if c.isalpha() or c.isdigit() or c == " "]).rstrip()
+        else:
+            safe_name = "Combined Campaigns"
+
+        if self.timeline_mode:
+            filename = f"Gophish Timeline Results for {safe_name}.xlsx"
+        else:
+            filename = f"Gophish Results for {safe_name}.xlsx"
+
+        return os.path.join(self.output_dir, filename)
 
     def _build_output_word_file_name(self):
-        """Create the docx report name."""
-        safe_name = "".join([c for c in self.cam_name if c.isalpha() or c.isdigit() or c == " "]).rstrip()
-        word_report = f"Gophish Results for {safe_name}.docx"
-        return word_report
+        """Create the docx report name with output directory."""
+        # Use custom filename if provided
+        if hasattr(self, 'custom_filename') and self.custom_filename:
+            return os.path.join(self.output_dir, self.custom_filename)
+
+        # Generate default filename
+        if self.timeline_mode and self.separate_campaigns and len(self.campaign_timeline_data) > 1:
+            # For separate campaigns timeline, use generic name since each sheet has its own campaign name
+            safe_name = "Multiple Campaigns"
+        elif hasattr(self, 'cam_name') and self.cam_name:
+            safe_name = "".join([c for c in self.cam_name if c.isalpha() or c.isdigit() or c == " "]).rstrip()
+        else:
+            safe_name = "Combined Campaigns"
+
+        if self.timeline_mode:
+            filename = f"Gophish Timeline Results for {safe_name}.docx"
+        else:
+            filename = f"Gophish Results for {safe_name}.docx"
+
+        return os.path.join(self.output_dir, filename)
 
     def _set_word_column_width(self, column, width):
         """Custom function for quickly and easily setting the width of a table's column in the Word
@@ -1044,6 +1548,293 @@ Ensure the IDs are provided as comma-separated integers or interger ranges, e.g.
 
         goreport_xlsx.close()
         print(f"[+] Done! Check '{self.output_xlsx_report}' for your results.")
+
+    def write_xlsx_timeline_report(self):
+        """Generate Excel timeline report with timeline-specific columns."""
+        timeline_xlsx = xlsxwriter.Workbook(self.output_xlsx_report)
+
+        # Define formats
+        header_format = timeline_xlsx.add_format({'bold': True})
+        header_format.set_text_wrap()
+        header_format.set_align('vcenter')
+        header_format.set_bg_color(self.xlsx_header_bg_color)
+        header_format.set_font_color(self.xlsx_header_font_color)
+
+        wrap_format = timeline_xlsx.add_format()
+        wrap_format.set_text_wrap()
+        wrap_format.set_align('vcenter')
+
+        center_format = timeline_xlsx.add_format()
+        center_format.set_text_wrap()
+        center_format.set_align('vcenter')
+        center_format.set_align('center')
+
+        if self.separate_campaigns and self.campaign_timeline_data:
+            # Create separate sheets for each campaign
+            for campaign_id, campaign_info in self.campaign_timeline_data.items():
+                # Use actual campaign name for sheet name, sanitized for Excel
+                campaign_name = campaign_info['campaign_name']
+                clean_name = "".join([c for c in campaign_name if c.isalnum() or c in ' -_'])
+                # Limit to Excel's 31 char limit
+                sheet_name = clean_name[:31]
+                if not clean_name:  # Fallback if name becomes empty
+                    sheet_name = f"Campaign_{campaign_id}"
+                worksheet = timeline_xlsx.add_worksheet(sheet_name)
+
+                # Use raw events directly (each click on separate row)
+                self._write_timeline_sheet(worksheet, campaign_info['events'], header_format, wrap_format, center_format, campaign_info, 0)
+        else:
+            # Combined mode - all campaigns in one sheet
+            worksheet = timeline_xlsx.add_worksheet("Combined Timeline")
+
+            if self.campaign_timeline_data:
+                # Multiple campaigns combined in one sheet
+                self._write_combined_timeline_sheet(worksheet, self.campaign_timeline_data, header_format, wrap_format, center_format)
+            else:
+                # Single campaign or fallback
+                campaign_name = self.cam_name if hasattr(self, 'cam_name') and self.cam_name else "Combined Campaigns"
+                # Create a campaign_info dict for consistency
+                campaign_info = {
+                    'campaign_name': campaign_name,
+                    'subject': self.cam_subject_line if hasattr(self, 'cam_subject_line') else 'N/A',
+                    'phish_url': self.cam_url if hasattr(self, 'cam_url') else 'N/A',
+                    'launch_date': self.launch_date if hasattr(self, 'launch_date') else 'N/A'
+                }
+                self._write_timeline_sheet(worksheet, self.timeline_data, header_format, wrap_format, center_format, campaign_info, 0)
+
+        timeline_xlsx.close()
+        print(f"[+] Done! Check '{self.output_xlsx_report}' for your timeline results.")
+
+    def _group_raw_events_by_user(self, raw_events):
+        """Group raw timeline events by user email for separated campaign reports."""
+        user_timeline = {}
+
+        for event in raw_events:
+            email = event['user_email']
+
+            if email not in user_timeline:
+                user_timeline[email] = {
+                    'campaign_id': event['campaign_id'],
+                    'campaign_name': event['campaign_name'],
+                    'user_email': email,
+                    'reference_id': event['reference_id'],
+                    'email_sent_time': event['email_sent_time'],
+                    'click_timestamps': [],
+                    'data_submitted_time': None,
+                    'submitted_data': None,
+                    'ip_address': event['ip_address'],
+                    'user_agent': event['user_agent']
+                }
+
+            # Add event data based on type
+            if event['event_type'] == "Clicked Link":
+                user_timeline[email]['click_timestamps'].append(event['event_time'])
+                # Update IP and user agent from most recent click if different
+                if event['ip_address'] != 'Unknown':
+                    user_timeline[email]['ip_address'] = event['ip_address']
+                if event['user_agent'] != 'Unknown':
+                    user_timeline[email]['user_agent'] = event['user_agent']
+
+            elif event['event_type'] == "Submitted Data":
+                user_timeline[email]['data_submitted_time'] = event['event_time']
+                user_timeline[email]['submitted_data'] = event['submitted_data']
+                # Update IP and user agent from submission if different
+                if event['ip_address'] != 'Unknown':
+                    user_timeline[email]['ip_address'] = event['ip_address']
+                if event['user_agent'] != 'Unknown':
+                    user_timeline[email]['user_agent'] = event['user_agent']
+
+        # Sort click timestamps for each user
+        for user_data in user_timeline.values():
+            user_data['click_timestamps'].sort()
+
+        return list(user_timeline.values())
+
+    def _write_combined_timeline_sheet(self, worksheet, campaign_timeline_data, header_format, wrap_format, center_format):
+        """Write multiple campaigns to a single worksheet with sections for each."""
+        # Set column widths (only needed once)
+        worksheet.set_column(0, 0, 25)  # User Email
+        worksheet.set_column(1, 1, 15)  # Reference ID
+        worksheet.set_column(2, 2, 20)  # Email Sent Time
+        worksheet.set_column(3, 3, 15)  # Event Type
+        worksheet.set_column(4, 4, 25)  # Event Time
+        worksheet.set_column(5, 5, 40)  # Submitted Data
+        worksheet.set_column(6, 6, 15)  # IP Address
+        worksheet.set_column(7, 7, 50)  # User Agent
+
+        row = 0
+
+        # Write each campaign's sections
+        for campaign_id, campaign_info in campaign_timeline_data.items():
+            # Debug: Print what's in campaign_info
+            if self.verbose:
+                print(f"[DEBUG] Writing campaign {campaign_id}:")
+                print(f"  Name: {campaign_info.get('campaign_name', 'N/A')}")
+                print(f"  Subject: {campaign_info.get('subject', 'N/A')}")
+                print(f"  URL: {campaign_info.get('phish_url', 'N/A')}")
+                print(f"  Launch: {campaign_info.get('launch_date', 'N/A')}")
+
+            # Write this campaign's data
+            row = self._write_timeline_sheet(worksheet, campaign_info['events'], header_format, wrap_format,
+                                            center_format, campaign_info, row)
+            # Add spacing between campaigns
+            row += 3
+
+        return row
+
+    def _write_timeline_sheet(self, worksheet, timeline_data, header_format, wrap_format, center_format, campaign_info, start_row=0):
+        """Write timeline data to a worksheet starting at specified row."""
+        # Set column widths only if starting at row 0
+        if start_row == 0:
+            worksheet.set_column(0, 0, 25)  # User Email
+            worksheet.set_column(1, 1, 15)  # Reference ID
+            worksheet.set_column(2, 2, 20)  # Email Sent Time
+            worksheet.set_column(3, 3, 15)  # Event Type
+            worksheet.set_column(4, 4, 25)  # Event Time
+            worksheet.set_column(5, 5, 40)  # Submitted Data
+            worksheet.set_column(6, 6, 15)  # IP Address
+            worksheet.set_column(7, 7, 50)  # User Agent
+
+        row = start_row
+
+        # Extract campaign details
+        campaign_name = campaign_info.get('campaign_name', 'Unknown Campaign') if isinstance(campaign_info, dict) else campaign_info
+        subject = campaign_info.get('subject', 'N/A') if isinstance(campaign_info, dict) else 'N/A'
+        phish_url = campaign_info.get('phish_url', 'N/A') if isinstance(campaign_info, dict) else 'N/A'
+        launch_date = campaign_info.get('launch_date', 'N/A') if isinstance(campaign_info, dict) else 'N/A'
+
+        # Section 1: Campaign Details
+        worksheet.write(row, 0, "CAMPAIGN DETAILS", header_format)
+        worksheet.merge_range(row, 0, row, 1, "CAMPAIGN DETAILS", header_format)
+        row += 1
+
+        worksheet.write(row, 0, "Subject:", wrap_format)
+        worksheet.write(row, 1, subject, wrap_format)
+        row += 1
+
+        worksheet.write(row, 0, "Phish URL:", wrap_format)
+        worksheet.write(row, 1, phish_url, wrap_format)
+        row += 1
+
+        worksheet.write(row, 0, "Started:", wrap_format)
+        # Format the launch date if it's available
+        if launch_date != 'N/A':
+            formatted_date = self.format_datetime_gmt4(launch_date) if hasattr(self, 'format_datetime_gmt4') else launch_date
+            worksheet.write(row, 1, formatted_date, wrap_format)
+        else:
+            worksheet.write(row, 1, launch_date, wrap_format)
+        row += 2
+
+        # Section 2: Click Statistics
+        worksheet.write(row, 0, "CLICK STATISTICS", header_format)
+        worksheet.merge_range(row, 0, row, 1, "CLICK STATISTICS", header_format)
+        row += 1
+
+        worksheet.write(row, 0, "User", header_format)
+        worksheet.write(row, 1, "Number of Clicks", header_format)
+        row += 1
+
+        # Calculate click statistics from timeline data
+        click_stats = {}
+        for event in timeline_data:
+            if event.get('event_type') == 'Clicked Link':
+                user_email = event.get('user_email', 'Unknown')
+                click_stats[user_email] = click_stats.get(user_email, 0) + 1
+
+        # Write click statistics
+        if click_stats:
+            for user_email, click_count in sorted(click_stats.items()):
+                worksheet.write(row, 0, user_email, wrap_format)
+                worksheet.write(row, 1, click_count, center_format)
+                row += 1
+        else:
+            worksheet.write(row, 0, "No clicks recorded", wrap_format)
+            row += 1
+
+        row += 2  # Add space before timeline section
+
+        # Section 3: Timeline Data (original section)
+        # Campaign header
+        worksheet.write(row, 0, f"TIMELINE DATA: {campaign_name}", header_format)
+        worksheet.merge_range(row, 0, row, 7, f"TIMELINE DATA: {campaign_name}", header_format)
+        row += 1
+
+        # Column headers
+        headers = [
+            "User Email",
+            "Reference ID",
+            "Email Sent Time",
+            "Event Type",
+            "Event Time",
+            "Submitted Data",
+            "IP Address",
+            "User Agent"
+        ]
+
+        # Don't add campaigns column when writing sequential campaign sections
+        # The campaigns column was for the old combined mode where all events were mixed together
+
+        for col, header in enumerate(headers):
+            worksheet.write(row, col, header, header_format)
+        row += 1
+
+        # Data rows
+        for event in timeline_data:
+            col = 0
+
+            # Handle both raw events and grouped events
+            if isinstance(event, dict):
+                # User Email
+                worksheet.write(row, col, event.get('user_email', ''), wrap_format)
+                col += 1
+
+                # Reference ID
+                ref_id = event.get('reference_id', event.get('reference_ids', 'Unknown'))
+                worksheet.write(row, col, ref_id, center_format)
+                col += 1
+
+                # Email Sent Time
+                sent_time = event.get('email_sent_time', 'Unknown')
+                formatted_sent_time = self.format_datetime_gmt4(sent_time)
+                worksheet.write(row, col, formatted_sent_time, center_format)
+                col += 1
+
+                # Event Type
+                event_type = event.get('event_type', 'Unknown')
+                worksheet.write(row, col, event_type, center_format)
+                col += 1
+
+                # Event Time
+                event_time = event.get('event_time', 'Unknown')
+                formatted_event_time = self.format_datetime_gmt4(event_time)
+                worksheet.write(row, col, formatted_event_time, center_format)
+                col += 1
+
+                # Submitted Data
+                submitted_data = event.get('submitted_data', '')
+                if isinstance(submitted_data, dict):
+                    submitted_data = ', '.join([f"{k}: {v}" for k, v in submitted_data.items()])
+                elif not submitted_data:
+                    submitted_data = 'None'
+                worksheet.write(row, col, str(submitted_data), wrap_format)
+                col += 1
+
+                # IP Address
+                ip_addr = event.get('ip_address', event.get('ip_addresses', 'Unknown'))
+                worksheet.write(row, col, ip_addr, center_format)
+                col += 1
+
+                # User Agent
+                user_agent = event.get('user_agent', event.get('user_agents', 'Unknown'))
+                worksheet.write(row, col, user_agent, wrap_format)
+                col += 1
+
+                # Campaigns column removed - not needed for sequential campaign sections
+
+                row += 1
+
+        # Return the final row number for combined reports
+        return row
 
     def write_word_report(self):
         """Assemble and output the Word docx file report."""
@@ -1558,6 +2349,124 @@ Individuals Who Submitted: {self.total_unique_submitted}
         # Finalize document and save it as the value of output_word_report
         d.save(f"{self.output_word_report}")
         print(f"[+] Done! Check \"{self.output_word_report}\" for your results.")
+
+    def write_word_timeline_report(self):
+        """Generate Word timeline report with timeline-specific content."""
+        # Create document writer using the template
+        d = Document("template.docx")
+
+        # Add timeline report header
+        d.add_heading("Timeline Report", 1)
+
+        if self.separate_campaigns and self.campaign_timeline_data:
+            # Create sections for each campaign
+            for campaign_id, campaign_info in self.campaign_timeline_data.items():
+                d.add_heading(f"Campaign {campaign_id}: {campaign_info['campaign_name']}", 2)
+                self._write_timeline_word_section(d, campaign_info['events'])
+                d.add_page_break()
+        else:
+            # Single section for combined data
+            campaign_name = self.cam_name if hasattr(self, 'cam_name') and self.cam_name else "Combined Campaigns"
+            d.add_heading(f"Timeline for {campaign_name}", 2)
+            self._write_timeline_word_section(d, self.timeline_data)
+
+        # Save the document
+        d.save(f"{self.output_word_report}")
+        print(f"[+] Done! Check \"{self.output_word_report}\" for your timeline results.")
+
+    def _write_timeline_word_section(self, document, timeline_data):
+        """Write timeline data section to Word document."""
+        if not timeline_data:
+            document.add_paragraph("No timeline data available.")
+            return
+
+        # Add summary paragraph
+        document.add_paragraph(f"This section contains timeline data for {len(timeline_data)} users.")
+
+        # Create timeline table
+        table = document.add_table(rows=1, cols=8)
+        table.style = 'Table Grid'
+
+        # Header row
+        header_cells = table.rows[0].cells
+        headers = [
+            "User Email",
+            "Reference ID",
+            "Email Sent Time",
+            "Click Timestamps",
+            "Data Submitted Time",
+            "Submitted Data",
+            "IP Address",
+            "User Agent"
+        ]
+
+        for i, header in enumerate(headers):
+            header_cells[i].text = header
+            # Make header bold
+            for paragraph in header_cells[i].paragraphs:
+                for run in paragraph.runs:
+                    run.bold = True
+
+        # Data rows
+        for event in timeline_data:
+            row_cells = table.add_row().cells
+
+            # Handle both raw events and grouped events
+            if isinstance(event, dict):
+                # User Email
+                row_cells[0].text = event.get('user_email', '')
+
+                # Reference ID
+                ref_id = event.get('reference_id', event.get('reference_ids', 'Unknown'))
+                row_cells[1].text = str(ref_id)
+
+                # Email Sent Time
+                sent_time = event.get('email_sent_time', '')
+                if isinstance(event.get('email_sent_times'), list) and event['email_sent_times']:
+                    sent_time = ', '.join(event['email_sent_times'])
+                row_cells[2].text = str(sent_time)
+
+                # Click Timestamps
+                click_times = event.get('click_timestamps', [])
+                if isinstance(click_times, list):
+                    click_times_str = ', '.join(click_times) if click_times else 'None'
+                else:
+                    click_times_str = str(click_times) if click_times else 'None'
+                row_cells[3].text = click_times_str
+
+                # Data Submitted Time
+                submit_time = event.get('data_submitted_time', '')
+                if isinstance(event.get('data_submitted_times'), list) and event['data_submitted_times']:
+                    submit_time = ', '.join(event['data_submitted_times'])
+                row_cells[4].text = str(submit_time) if submit_time else 'None'
+
+                # Submitted Data
+                submitted_data = event.get('submitted_data', event.get('submitted_data_entries', ''))
+                if isinstance(submitted_data, list) and submitted_data:
+                    # Convert list of dicts to readable format
+                    data_strs = []
+                    for data_entry in submitted_data:
+                        if isinstance(data_entry, dict):
+                            data_strs.append(', '.join([f"{k}: {v}" for k, v in data_entry.items()]))
+                        else:
+                            data_strs.append(str(data_entry))
+                    submitted_data = '; '.join(data_strs)
+                elif isinstance(submitted_data, dict):
+                    submitted_data = ', '.join([f"{k}: {v}" for k, v in submitted_data.items()])
+                elif not submitted_data:
+                    submitted_data = 'None'
+                row_cells[5].text = str(submitted_data)
+
+                # IP Address
+                ip_addr = event.get('ip_address', event.get('ip_addresses', 'Unknown'))
+                row_cells[6].text = str(ip_addr)
+
+                # User Agent
+                user_agent = event.get('user_agent', event.get('user_agents', 'Unknown'))
+                row_cells[7].text = str(user_agent)
+
+        # Add some spacing after the table
+        document.add_paragraph("")
 
     def config_section_map(self, config_parser, section):
         """This function helps by reading accepting a config file section, from gophish.config,

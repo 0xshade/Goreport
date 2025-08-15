@@ -1,120 +1,224 @@
-# Goreport v3.0, a Gophish Reporting Tool
+# GoReport - Gophish Campaign Reporting Tool
 
-This script accepts your Gophish campaign ID(s) as a parameter and then collects the campaign results to present the statistics and perform user-agent parsing and geolocation lookups for IP addresses. Goreport generates lists of IP addresses, operating systems, browser types and versions, and locations with counts for the number of times each one was seen throughout the campaign.
+**A fork of the original [GoReport](https://github.com/chrismaddalena/GoReport) project with added functionality for multi-campaign and timeline reporting.**
 
-A note on statistics: Goreport will report the total number of events and the number of email recipients that participated in each event. In other words, Goreport will show how many times Gophish recorded a "Clicked Link" event and how many recipients clicked a link. These are very different numbers. A campaign sent to 10 people could have 9 Clicked Link events when only 3 recipients clicked a link. Knowing that recipients clicked a link or submitted data more than once is valuable information, but make sure you keep the numbers straight.
+GoReport connects to Gophish servers via API to extract and analyze phishing campaign data. It generates comprehensive reports with detailed statistics, user behavior tracking, and timeline analysis. This fork focuses on improving multi-campaign workflows with better timeline reports, proper event tracking, and flexible output options.
 
-## Goreport Requirements
+## What This Tool Does
 
-This script requires a Gophish server, and active or complete campaign, and the API key for your Gophish application. Get this key by clicking the Settings tab. The API key will be found on the first page. Each Gophish user account has its own API key which acts as the method of authentication for that user to the Gophish API. If you use multiple accounts with Gophish, make sure you grab the correct users API key.
+GoReport processes Gophish campaign results to provide:
+- **Campaign Statistics**: Total events vs unique recipients for clicks, opens, and submissions
+- **Timeline Reconstruction**: Chronological event logs with timestamps
+- **Multi-Campaign Analysis**: Compare and analyze multiple campaigns together
 
-These Python libraries are required as well:
-* Gophish
-* requests
-* xlsxwriter
-* configparser
-* python-docx
-* click
-* user-agents
-* python-dateutil (Required by the Gophish library)
+## Whats different?
 
-## Goreport Setup
+### Timeline Reports
+- Each campaign sheet includes three organized sections:
+  1. **Campaign Details**: Subject line, phishing URL, and launch time
+  2. **Click Statistics**: Per-user click counts in a summary table
+  3. **Timeline Data**: Detailed chronological event log
+- Default behavior creates separate sheets for each campaign
+- `--combine-campaigns` option places all campaigns sequentially in one sheet
 
-You need to do a few things to get started:
+### Custom RID
+- If you have modified the default RID in your gophish instance, then you can specify a custom one when parsing results with `--rid-field`.
 
-* Run `pip install -r requirements.txt`.
-* Edit/create a Gophish.config configuration file that looks like the one below.
-  * Note: The full host URL is required, so provide http://IP:PORT or https://IP:PORT.
-	* Be aware of using HTTP vs HTTPS. If you type in the wrong one you'll receive connection errors.
-* Get your campaign ID(s) by clicking your campaign(s) and referencing the URL(s) (it's the number at the end).
-* If you want to be able to create Word docx reports, drop a "template.docx" template file into the Goreport directory (more information below in Selecting Report Output).
+### Added CLI arguments
+- `--timeline`: Generate focused timeline reports
+- `--combine-campaigns`: Control how multiple campaigns are displayed
+- `--output`: Specify output directoy/filename for the generated report.
+- `--rid-field`: Specify custom reference ID if you have modified the default RID in your gophish instance.
 
-## Basic Usage
 
-This example will assume Gophish is on another server and HTTPS is being used. To access the API endpoint, you will need to use SSH port forwarding with port 3333 (or any other local port you wish to use):
+## Quick Start with uv
 
-### Gophish.config
+```bash
+# Install uv if you haven't already
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
+# Clone and setup the project
+git clone <repository-url>
+cd Goreport
+
+# Install dependencies with uv
+uv pip install -r requirements.txt
+
+# Copy and configure your settings
+cp gophish.config.sample gophish.config
+# Edit gophish.config with your API key and server details
+
+# Run a basic report
+uv run python GoReport.py --id 1 --format excel
+
+# Generate timeline report with multiple campaigns
+uv run python GoReport.py --id 1,2,3 --format excel --timeline
 ```
+
+## Requirements
+
+* Python 3.10+
+* Gophish server with API access
+* Dependencies managed via `pyproject.toml`:
+  - gophish (API client)
+  - xlsxwriter (Excel reports)
+  - python-docx (Word reports)
+  - click (CLI interface)
+  - requests, user-agents, python-dateutil
+
+## Setup
+
+1. **Configure API Access**:
+   ```bash
+   cp gophish.config.sample gophish.config
+   # Edit gophish.config with your credentials
+   ```
+
+2. **SSH Port Forwarding** (for remote servers):
+   ```bash
+   ssh -L 3333:localhost:3333 user@gophish-server
+   ```
+
+3. **Word Template** (optional):
+   Place a `template.docx` file in the project root with your preferred styles
+
+## Usage Examples
+
+### Basic Reports
+
+```bash
+# Single campaign Excel report
+uv run python GoReport.py --id 26 --format excel
+
+# Multiple campaigns (comma-separated or ranges)
+uv run python GoReport.py --id 26,29-33,54 --format excel
+
+# Quick terminal output for campaign status
+uv run python GoReport.py --id 26 --format quick
+
+# Word document report
+uv run python GoReport.py --id 26 --format word
+```
+
+### Timeline Reports
+
+```bash
+# Single campaign timeline
+uv run python GoReport.py --id 1 --format excel --timeline
+
+# Multiple campaigns - separate sheets (default)
+uv run python GoReport.py --id 1,2,3 --format excel --timeline
+
+# Multiple campaigns - combined in one sheet
+uv run python GoReport.py --id 1,2,3 --format excel --timeline --combine-campaigns
+```
+
+### Additional Options
+
+```bash
+# Custom output path
+uv run python GoReport.py --id 26 --format excel --output reports/phishing_Q4.xlsx
+
+# Mark campaigns as complete after reporting
+uv run python GoReport.py --id 26,27 --format excel --complete
+
+# Use custom reference ID field
+uv run python GoReport.py --id 26 --format excel --rid-field "employee_id"
+
+# Use alternate config file
+uv run python GoReport.py --id 26 --format excel --config production.config
+```
+
+## Configuration
+
+### Config File Structure
+
+```ini
 [Gophish]
 gp_host: https://127.0.0.1:3333
 api_key: <YOUR_API_KEY>
 
 [ipinfo.io]
-ipinfo_token: <IPINFO_API_KEY>
+# Optional: Free tier allows 1000 requests/day
+ipinfo_token: <IPINFO_TOKEN>
 
 [Google]
-geolocate_key: <GEOLOCATE_API_KEY>
+# Optional: For enhanced geolocation ($0.005/request)
+geolocate_key: <GOOGLE_API_KEY>
 ```
 
-### A Basic Command
+### Multiple Configurations
 
-`python3 Goreport.py --id 26 --format excel`
+Manage multiple Gophish servers or accounts:
 
-That would fetch the results of campaign 26 from https://localhost:3333/api/campaigns/26/?api_key=<Your_API_Key> and output the results to an xlsx file.
+```bash
+# Create separate config files
+cp gophish.config production.config
+cp gophish.config testing.config
 
-Multiple IDs can be provided at one time for multiple reports. The IDs can be provided using a comma-separated list, a range, or both.
+# Use specific config
+uv run python GoReport.py --id 26 --format excel --config production.config
+```
 
-Example: `python3 Goreport.py --id 26,29-33,54 --format csv`
+## Output Formats
 
-### Changing Config Files
+### Excel Reports (.xlsx) - Recommended
+Generate comprehensive workbooks with multiple worksheets:
 
-If you use multiple Gophish user accounts or servers, then you will have multiple API keys. To make it easier to switch between keys, Goreport's `--config` option enables you to override the default config file, gophish.config, with a config file you name. If this argument is provided with a valid, readable config file, Goreport will use it instead of gophish.config to setup the API connections.
+**Standard Report Contents:**
+- Campaign overview and settings
+- Detailed recipient results with outcomes
+- Browser and OS statistics
+- IP addresses and geolocation data
+- Complete event timeline
 
-You might use this option if you have, for example, three phishing servers running Gophish. You could setup three config files, each with a different Gophish API key, and then use them as needed.
+**Timeline Report Mode (`--timeline`):**
+- Focused view on user interactions
+- Three sections per campaign:
+  - Campaign details (subject, URL, launch time)
+  - Click statistics table (user email + click count)
+  - Chronological event timeline
+- Separate sheets per campaign (default)
+- Sequential sections in one sheet (`--combine-campaigns`)
 
-Example: `python3 Goreport.py --id 26,29-33,54 --format csv --config phish_server_2.config`
+### Word Reports (.docx)
+- Professional formatted documents
+- Requires `template.docx` with "Goreport" table style
+- Suitable for executive presentations
+- All statistics and summaries included
 
-### Combining Reports
+### Quick Reports (Terminal)
+- Instant campaign status check
+- Basic statistics output
+- No file generation
+- Useful for monitoring active campaigns
 
-If you ran multiple campaigns using the same settings for different target groups, you may wish to run Goreport against these campaigns all at once and then combine the results into one report. This can be accomplished by adding Goreports `--combine` flag.
+## Command-Line Options
 
-Example: `python3 Goreport.py --id 26,29-33,54 --format excel --combine`
+| Option | Description | Example |
+|--------|-------------|---------|
+| `--id` | Campaign ID(s) | `--id 1,2,5-10` |
+| `--format` | Output format | `--format excel` |
+| `--timeline` | Timeline-focused report | `--timeline` |
+| `--combine-campaigns` | Merge campaigns into single sheet | `--combine-campaigns` |
+| `--combine` | Merge campaigns into one report | `--combine` |
+| `--complete` | Mark campaigns complete | `--complete` |
+| `--output` | Custom output path | `--output reports/Q4.xlsx` |
+| `--rid-field` | Custom reference ID field | `--rid-field employee_id` |
+| `--config` | Alternate config file | `--config prod.config` |
+| `--google` | Use Google Maps API | `--google` |
 
-This command would collect the results for campaigns 26, 29, 30, 31, 32, 33, and 54. Normally, Goreport would output seven xlsx files, but the addition of `--combine` tells Goreport to combine the results and output just one report as if they were all one large campaign.
+## Project Structure
 
-### Switching Report Output
-
-Goreport can output either an Excel spreadsheet (xlsx) or a Word document (docx). There is also a "quick" report option. Simply select your preferred format using the `--format` command line argument, as shown above in the Sample Usage section. There is not much to say about the csv format.
-
-The Word document is built from a template, template.docx. Place your template file, named template.docx, into the Goreport directory with the main script. Your template should include a table style you want to use and heading styles for Heading 1 and Heading 1. Name your preferred table style "Goreport" and setup your Heading 1 and 2 styles.
-
-Feel free to create a custom style or use an existing style. The only thing that matters is a template.docx file exists and it has a "Goreport" table style.
-
-To rename a style, right-click the style, select Modify Table Style, and set a new name.
-
-The Excel option outputs a nicely formatted Excel workbook with multiple worksheets for the different collections of results and statistics. This is a nice option if you want to easily sort or filter result tables.
-
-Finally, there is a "quick" option. This does not generate a report document. Instead of a report, it outputs basic information about the campaign to your terminal. This is handy for quickly checking campaign progress or referencing results after campaign completion.
-
-### Marking Campaigns as Complete
-
-If you want to set the status of a campaign to "Complete" when you run your report, Goreport can help you do this automatically with the `--complete` flag. If you provide this flag, Goreport will use the API to mark each campaign ID as "Complete" to end the campaign and update the status in Gophish.
-
-## Additional Information
-
-Gophish performs it's own geolocation lookups with IP addresses and returns latitude and longitude. This works alright, but may fail and return coordinates of `0,0` or may return old information.
-
-Goreport has two options that might be used to improve location results. The first, and recommended option, is the ipinfo.io API. API access is free as long as you make less than 1,000 queries per 24 hour period. That should not be too difficult for a phishing campaign.
-
-If an ipinfo.io API key is added to the config file Goreport will automatically use ipinfo.io to gather current geolocation information for each unique IP address.
-
-The second option is the Google Maps API. Goreport v1.0 used the Maps API when it was free. Google now charges $0.005/request for the Geolocate API (as it is now called). If you would prefer to not use ipinfo.io, activate the Maps Geolocate API on a Google account and add the API key to the Goreport config file. Then add the `--google` flag to your Goreport command anytime you want Goreport to use the API to lookup Gophish's coordinates to get a formatted address.
-
-## Technical Information
-
-If you'd like to review the code, here is a basic outline of the process:
-
-Goreport.py uses Python 3 and the Command Line Interface Creation Kit (CLICK) library. When the script is run, a new Goreport object is created. The `__init__` function for the Goreport class creates a connection to your Gophish server using the provided API key for authentication. Then the `run()` function is called.
-
-`Run()` uses the command line options to kick-off reporting. A For loop is used to loop through all campaign IDs provided with `--id`. Your Gophish server is contacted for campaign details for each individual ID.
-
-First, `collect_all_campaign_info()` is called to stash basic campaign information in variables. This includes data like the campaign's name, when it was run, its status, the SMTP server used, the template's name, and more.
-
-Second, `process_timeline_events()` is called to get Gophish's timeline model for the ID. This includes the events recorded by Gophish. This function runs second because it fills-in some lists that are reviewed by process_results().
-
-Third, `process_results()` is called to get Gophish's results model for the ID. This provides data like the number of targets in the campaign.
-
-Goreport uses these steps to setup some lists to determine the basic results for the campaign, e.g. who was successfully sent an email, which recipients clicked a linked, and which recipients provided data.
-
-With this foundation, Goreport can arrange the data in any number of ways for a report. At any time, the lists can be queried to check if a certain email address in the results model appears in the `targets_clicked` list to confirm if that recipient clicked a link. That can then kick-off a review of the timeline model to collect details. Gophish keeps the details like IP address and user-agent in the timeline model and basic information in the results model.
+```
+Goreport/
+├── GoReport.py           # Main CLI entry point
+├── lib/
+│   ├── goreport.py      # Core reporting logic
+│   └── banners.py       # CLI banners
+├── pyproject.toml       # Project metadata and dependencies
+├── requirements.txt     # Python dependencies
+├── gophish.config.sample # Configuration template
+├── template.docx        # Word report template (optional)
+└── output/             # Default report output directory
+```

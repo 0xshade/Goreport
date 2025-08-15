@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import sys
+import os
+
+# Add the current directory to the path so we can import GoReport
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Import the main GoReport module
+from GoReport import parse_options
+
+if __name__ == "__main__":
+    parse_options()

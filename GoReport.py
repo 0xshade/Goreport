@@ -63,8 +63,8 @@ def GoReport():
 provide a comma-separated list of IDs (e.g. -id #,#,#).", required=True)
 @click.option('--format', type=click.Choice(['excel', 'word', 'quick']), help="Use this option to \
 choose between report formats.", required=True)
-@click.option('--combine', is_flag=True, help="Combine all results into one report. The first \
-campaign ID will be used for information such as campaign name, dates, and URL.", required=False)
+@click.option('--separate', is_flag=True, help="Generate separate reports for each campaign ID \
+(default is to combine multiple campaigns into one report).", required=False)
 @click.option('--complete', is_flag=True, help="Optionally mark the campaign as complete in \
 Gophish.", required=False)
 @click.option('--config', type=click.Path(exists=True, readable=True, resolve_path=True),
@@ -75,24 +75,47 @@ to match Gophish event coordinates with an address. Requires a Geolocate API key
 the config file.", required=False)
 @click.option('-v', '--verbose', is_flag=True, help="Sets verbose to true so GoReport will \
 display some additional feedback, such as flagging IP mis-matches.", required=False)
+@click.option('--timeline', is_flag=True, help="Generate timeline-only report focusing on clicks \
+and data submissions.", required=False)
+@click.option('--combine-campaigns', is_flag=True, help="When using timeline reports with multiple \
+campaigns, combine them into a single sheet (default is separate sheets).", required=False)
+@click.option('--output', type=click.Path(), help="Specify full output file path (e.g., 'reports/my_report.xlsx') \
+or directory. If not provided, reports are saved in an 'output' directory.", required=False)
+@click.option('--rid-field', type=click.STRING, help="Specify the field name to use for Reference ID \
+(e.g., 'rid', 'id'). If not provided, automatically searches common field names.", required=False)
 @click.pass_context
-def parse_options(self, id, format, combine, complete, config, google, verbose):
+def parse_options(self, id, format, separate, complete, config, google, verbose, timeline, combine_campaigns, output, rid_field):
     """GoReport uses the Gophish API to connect to your Gophish instance using the
     IP address, port, and API key for your installation. This information is provided
     in the gophish.config file and loaded at runtime. GoReport will collect details
     for the specified campaign and output statistics and interesting data for you.
 
     Select campaign ID(s) to target and then select a report format.\n
-       * csv: A comma separated file. Good for copy/pasting into other documents.\n
+       * excel: An Excel xlsx file with detailed campaign results.\n
        * word: A formatted docx file. A template.docx file is required (see the README).\n
        * quick: Command line output of some basic stats. Good for a quick check or client call.\n
+
+    Use --timeline to generate focused reports showing only user clicks and data submissions.\n
+    Use --separate-campaigns with --timeline to create separate sheets for each campaign.\n
+    Use --output to specify a full file path or directory (defaults to 'output' directory).\n
     """
     # Print the Gophish banner
     banners.print_banner()
+
+    # Default to separate campaigns for timeline reports (inverted from combine_campaigns)
+    # If combine_campaigns is False or not set, we want separate campaigns
+    separate_campaigns = not combine_campaigns if timeline else False
+
+    # Set default output directory if not specified
+    # When output is specified, treat it as a full file path
+    if not output:
+        output = "output"  # Default directory
+
     # Create a new Goreport object that will use the specified report format
-    gophish = goreport.Goreport(format, config, google, verbose)
+    gophish = goreport.Goreport(format, config, google, verbose, timeline, separate_campaigns, output, rid_field)
     # Execute reporting for the provided list of IDs
-    gophish.run(id, combine, complete)
+    # Pass the inverse of 'separate' as 'combine' (default is to combine)
+    gophish.run(id, not separate, complete)
 
 
 if __name__ == '__main__':
