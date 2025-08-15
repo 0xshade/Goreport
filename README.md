@@ -2,8 +2,6 @@
 
 **A fork of the original [GoReport](https://github.com/chrismaddalena/GoReport) project with added functionality for multi-campaign and timeline reporting.**
 
-GoReport connects to Gophish servers via API to extract and analyze phishing campaign data. It generates comprehensive reports with detailed statistics, user behavior tracking, and timeline analysis. This fork focuses on improving multi-campaign workflows with better timeline reports, proper event tracking, and flexible output options.
-
 ## What This Tool Does
 
 GoReport processes Gophish campaign results to provide:
@@ -15,9 +13,9 @@ GoReport processes Gophish campaign results to provide:
 
 ### Timeline Reports
 - Each campaign sheet includes three organized sections:
-  1. **Campaign Details**: Subject line, phishing URL, and launch time
-  2. **Click Statistics**: Per-user click counts in a summary table
-  3. **Timeline Data**: Detailed chronological event log
+  - **Campaign Details**: Subject line, phishing URL, and launch time
+  - **Click Statistics**: Per-user click counts in a summary table
+  - **Timeline Data**: Detailed chronological event log
 - Default behavior creates separate sheets for each campaign
 - `--combine-campaigns` option places all campaigns sequentially in one sheet
 
@@ -29,7 +27,6 @@ GoReport processes Gophish campaign results to provide:
 - `--combine-campaigns`: Control how multiple campaigns are displayed
 - `--output`: Specify output directoy/filename for the generated report.
 - `--rid-field`: Specify custom reference ID if you have modified the default RID in your gophish instance.
-
 
 ## Quick Start with uv
 
@@ -159,39 +156,6 @@ cp gophish.config testing.config
 # Use specific config
 uv run python GoReport.py --id 26 --format excel --config production.config
 ```
-
-## Output Formats
-
-### Excel Reports (.xlsx) - Recommended
-Generate comprehensive workbooks with multiple worksheets:
-
-**Standard Report Contents:**
-- Campaign overview and settings
-- Detailed recipient results with outcomes
-- Browser and OS statistics
-- IP addresses and geolocation data
-- Complete event timeline
-
-**Timeline Report Mode (`--timeline`):**
-- Focused view on user interactions
-- Three sections per campaign:
-  - Campaign details (subject, URL, launch time)
-  - Click statistics table (user email + click count)
-  - Chronological event timeline
-- Separate sheets per campaign (default)
-- Sequential sections in one sheet (`--combine-campaigns`)
-
-### Word Reports (.docx)
-- Professional formatted documents
-- Requires `template.docx` with "Goreport" table style
-- Suitable for executive presentations
-- All statistics and summaries included
-
-### Quick Reports (Terminal)
-- Instant campaign status check
-- Basic statistics output
-- No file generation
-- Useful for monitoring active campaigns
 
 ## Command-Line Options
 
